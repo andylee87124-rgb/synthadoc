@@ -30,15 +30,9 @@ def test_cache_key_deterministic():
 
 def test_cache_version_changes_key():
     """Keys must differ across cache versions so stale entries are never served."""
-    import synthadoc.core.cache as cache_mod
-    original = cache_mod.CACHE_VERSION
-    try:
-        k1 = make_cache_key("op", {"text": "hello"})
-        cache_mod.CACHE_VERSION = str(int(original) + 1)
-        k2 = make_cache_key("op", {"text": "hello"})
-        assert k1 != k2
-    finally:
-        cache_mod.CACHE_VERSION = original
+    k1 = make_cache_key("op", {"text": "hello"}, version="4")
+    k2 = make_cache_key("op", {"text": "hello"}, version="5")
+    assert k1 != k2
 
 
 @pytest.mark.asyncio

@@ -129,9 +129,6 @@ The filename without extension, derived from the page title. ASCII-safe and CJK-
 
 ![Synthadoc Architecture](architecture.png)
 
-> Diagram source: `docs/architecture.drawio` (draw.io, not tracked in git).
-> To update: open in [draw.io](https://app.diagrams.net), edit, export as PNG to `docs/architecture.png`, commit the PNG.
-
 ### Request lifecycle (ingest via CLI)
 
 1. `synthadoc ingest report.pdf -w my-wiki`
@@ -224,7 +221,7 @@ Runs against the entire wiki or a scoped subset:
 
 Dispatches to the correct skill based on file extension, URL prefix, or intent keyword match. Manages 3-tier lazy loading. Returns `ExtractedContent` to IngestAgent.
 
-URL and intent-based sources (e.g. `search for: Dennis Ritchie…`) bypass all file-system existence checks in IngestAgent. Only local-file sources are checked for path validity and hashed for dedup.
+When a source is a URL or an intent phrase (e.g. `search for: Dennis Ritchie`), IngestAgent skips the local file checks — there is no file to verify or hash. File-existence validation and SHA-256 dedup only apply to local file paths.
 
 ---
 
@@ -288,6 +285,7 @@ This means importing 20 skills costs essentially zero memory until they are need
 | `url` | `http://`, `https://` | `fetch url`, `web page`, `website` | httpx fetch + BeautifulSoup clean |
 | `markdown` | `.md`, `.txt` | `markdown`, `text file`, `notes` | Direct read |
 | `docx` | `.docx` | `word document`, `docx` | python-docx |
+| `pptx` | `.pptx` | `powerpoint`, `presentation`, `pptx` | python-pptx; each slide rendered as a titled section; speaker notes appended when present |
 | `xlsx` | `.xlsx`, `.csv` | `spreadsheet`, `excel`, `csv` | openpyxl |
 | `image` | `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.tiff` | `image`, `screenshot`, `diagram`, `photo` | Base64 + vision LLM |
 | `web_search` | _(none)_ | `search for`, `find on the web`, `look up`, `web search`, `browse` | Calls Tavily API; returns top result URLs as child sources enqueued individually. Requires `TAVILY_API_KEY`. |
@@ -530,6 +528,7 @@ Reload the plugin (toggle off/on) after copying — a full Obsidian restart is n
 | `Synthadoc: Query wiki...` | Responsive modal (min 520px, 60vw, max 860px); markdown-rendered answer with citation footer; stays open when clicking elsewhere — must be closed explicitly via ✕ or Escape |
 | `Synthadoc: Lint report` | Modal showing contradicted pages and orphans with remediation hints |
 | `Synthadoc: Run lint` | Queues a lint job; shows a notice with contradiction + orphan counts when complete |
+| `Synthadoc: Run lint with auto-resolve` | Same as above but passes `auto_resolve: true` — LLM resolves contradictions automatically when confidence ≥ threshold |
 | `Synthadoc: List jobs...` | Modal with status-filter dropdown, results table, error details |
 | `Synthadoc: Web search...` | Modal — type a plain topic, engine prepends `search for:` and enqueues an ingest job; returns job ID |
 
@@ -547,7 +546,7 @@ Calls `GET /health` and `GET /status` in parallel (`Promise.allSettled`).
 
 ### Supported ingest formats
 
-`.md`, `.txt`, `.pdf`, `.docx`, `.xlsx`, `.csv`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.tiff`
+`.md`, `.txt`, `.pdf`, `.docx`, `.pptx`, `.xlsx`, `.csv`, `.png`, `.jpg`, `.jpeg`, `.webp`, `.gif`, `.tiff`
 
 ---
 
@@ -592,11 +591,20 @@ synthadoc
 
 ### `ingest --analyse-only`
 
-Runs the analysis step only (entity extraction + tagging + summary) and prints the JSON result without writing any wiki pages. Useful for previewing how a source will be interpreted before committing it to the wiki:
+Runs the analysis step only (entity extraction + tagging + summary) and prints the JSON result without writing any wiki pages. Useful for previewing how a source will be interpreted before committing it to the wiki.
+
+`--analyse-only` works with all three ingest modes — single source, `--batch`, and `--file` manifest. Each source is analysed in turn and its result printed as JSON:
 
 ```bash
+# Single file
 synthadoc ingest report.pdf --analyse-only -w my-wiki
 # → {"entities": ["Alan Turing", "Enigma"], "tags": ["cryptography"], "summary": "…"}
+
+# Whole folder — analyses every supported file, no pages written
+synthadoc ingest --batch raw_sources/ --analyse-only -w my-wiki
+
+# Manifest — analyses each line in the file
+synthadoc ingest --file sources.txt --analyse-only -w my-wiki
 ```
 
 ### `audit` sub-commands
@@ -714,13 +722,16 @@ on_lint_complete   = { cmd = "python hooks/notify.py", blocking = true }  # bloc
 provider    = "tavily"   # only supported provider
 max_results = 20         # URLs returned per query; each enqueued as an ingest job
 
+# Cron format: minute hour day-of-month month day-of-week
+#              0-59   0-23 1-31         1-12  0-6 (0=Sun)
+
 [[schedule.jobs]]
 op   = "ingest --batch raw_sources/"
-cron = "0 2 * * *"
+cron = "0 2 * * *"   # every day at 02:00
 
 [[schedule.jobs]]
 op   = "lint"
-cron = "0 3 * * 0"
+cron = "0 3 * * 0"   # every Sunday at 03:00
 ```
 
 ### Config keys reference
@@ -733,8 +744,9 @@ cron = "0 3 * * 0"
 | `queue.max_parallel_ingest` | int | `4` | Max concurrent ingest agents |
 | `queue.max_retries` | int | `3` | Retries before job → dead |
 | `queue.backoff_base_seconds` | int | `5` | Exponential backoff base (±20% jitter) |
-| `cost.soft_warn_usd` | float | `0.50` | Log warning, continue |
-| `cost.hard_gate_usd` | float | `2.00` | Require explicit confirmation |
+| `cache.version` | str | `"4"` | Bump to invalidate all cached LLM responses without touching source code |
+| `cost.soft_warn_usd` | float | `0.50` | Log warning, continue _(inactive in v0.1 — see note below)_ |
+| `cost.hard_gate_usd` | float | `2.00` | Require explicit confirmation _(inactive in v0.1 — see note below)_ |
 | `cost.auto_resolve_confidence_threshold` | float | `0.85` | Auto-apply lint resolutions above this score |
 | `ingest.max_pages_per_ingest` | int | `15` | Max pages one ingest may update |
 | `ingest.chunk_size` | int | `1500` | Text chunk size (characters) |
@@ -834,22 +846,29 @@ Stores deterministic LLM responses keyed by a hash of the operation type and ful
 **Cache key:**
 
 ```python
-CACHE_VERSION = "4"
-
-def make_cache_key(operation: str, inputs: dict) -> str:
-    payload = {"v": CACHE_VERSION, "op": operation, "inputs": inputs}
+def make_cache_key(operation: str, inputs: dict, version: str = CACHE_VERSION) -> str:
+    payload = {"v": version, "op": operation, "inputs": inputs}
     digest = hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
     return digest[:32]
 ```
 
-Bump `CACHE_VERSION` whenever prompt templates change. Old entries remain in `cache.db` but stop matching keys.
+The version is part of every cache key, so bumping it causes all existing entries to be bypassed (they remain in `cache.db` but no longer match any key).
+
+To invalidate the cache without touching source code, set `version` in `.synthadoc/config.toml`:
+
+```toml
+[cache]
+version = "5"   # bump to bypass all entries cached under previous versions
+```
+
+The default (`"4"`) is defined in `synthadoc/core/cache.py`. Custom skill authors and wiki operators can bump this freely without modifying core code.
 
 **Invalidation triggers:**
 
 | Trigger | Behavior |
 |---------|----------|
 | Source content changes | New SHA-256 → cache miss → fresh LLM call |
-| `CACHE_VERSION` bumped | All old entries bypassed |
+| `[cache] version` bumped in config | All old entries bypassed |
 | `ingest --force` | `bust_cache=True` → skips `cache.get()`, repopulates |
 | `cache clear` | Deletes all rows from `cache.db` |
 
@@ -873,6 +892,8 @@ Enforces per-operation budget limits. Evaluated before every LLM call.
 |-----------|---------|-----------|
 | `soft_warn_usd` | $0.50 | Log warning; auto-continue |
 | `hard_gate_usd` | $2.00 | Prompt user `Proceed? [y/N]`; block if N; skip prompt if `auto_confirm=True` or `--yes` flag |
+
+> **v0.1 note — cost thresholds are inactive.** Token counts are tracked accurately and stored in `audit.db`, but `cost_usd` is always `$0.0000` because no per-model pricing table is implemented yet. As a result, `soft_warn_usd` and `hard_gate_usd` never trigger. `auto_resolve_confidence_threshold` is unaffected — it uses LLM confidence scores, not cost. Per-model pricing and active cost gating are planned for v0.2.
 
 ### API
 
@@ -899,21 +920,6 @@ The HTTP server always passes `auto_confirm=True` (no interactive terminal avail
 
 **File:** `synthadoc/core/queue.py`  
 **Storage:** `<wiki-root>/.synthadoc/jobs.db` (SQLite)
-
-### Schema
-
-```sql
-CREATE TABLE jobs (
-    id          TEXT PRIMARY KEY,
-    operation   TEXT NOT NULL,      -- 'ingest' | 'lint' | 'query'
-    status      TEXT NOT NULL,      -- 'pending' | 'in_progress' | 'completed' | 'failed' | 'dead'
-    payload     TEXT,               -- JSON: operation-specific input
-    result      TEXT,               -- JSON: operation-specific output
-    error       TEXT,               -- error message + traceback on failure
-    retries     INTEGER DEFAULT 0,
-    created_at  TEXT NOT NULL       -- UTC ISO-8601
-);
-```
 
 ### State transitions
 

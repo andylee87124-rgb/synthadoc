@@ -54,6 +54,7 @@ class AgentsConfig:
         return AgentConfig(
             provider=override.provider,
             model=override.model,
+            base_url=override.base_url,
         )
 
 
@@ -62,6 +63,11 @@ class CostConfig:
     soft_warn_usd: float = 0.50
     hard_gate_usd: float = 2.00
     auto_resolve_confidence_threshold: float = 0.85
+
+
+@dataclass
+class CacheConfig:
+    version: str = "4"   # bump to invalidate all cached LLM responses
 
 
 @dataclass
@@ -117,6 +123,7 @@ class WebSearchConfig:
 @dataclass
 class Config:
     agents: AgentsConfig
+    cache: CacheConfig = field(default_factory=CacheConfig)
     cost: CostConfig = field(default_factory=CostConfig)
     ingest: IngestConfig = field(default_factory=IngestConfig)
     queue: QueueConfig = field(default_factory=QueueConfig)
@@ -134,7 +141,11 @@ class Config:
 
 
 def _parse_agent(raw: dict) -> AgentConfig:
-    return AgentConfig(provider=raw["provider"], model=raw["model"])
+    return AgentConfig(
+        provider=raw["provider"],
+        model=raw["model"],
+        base_url=raw.get("base_url", ""),
+    )
 
 
 def _validate_provider(agent: AgentConfig) -> None:
@@ -204,6 +215,7 @@ def _raw_to_config(raw: dict, source_has_agents: bool) -> Config:
             base_vals = {
                 "provider": default_agent.provider,
                 "model": default_agent.model,
+                "base_url": default_agent.base_url,
             }
             base_vals.update(a[name])
             parsed = _parse_agent(base_vals)
@@ -250,6 +262,10 @@ def _raw_to_config(raw: dict, source_has_agents: bool) -> Config:
         reload=sv.get("reload", False),
     )
 
+    # --- cache ---
+    cv = raw.get("cache", {})
+    cache = CacheConfig(version=str(cv.get("version", "4")))
+
     # --- schedule ---
     sched_raw = raw.get("schedule", {})
     jobs_raw = sched_raw.get("jobs", [])
@@ -271,6 +287,7 @@ def _raw_to_config(raw: dict, source_has_agents: bool) -> Config:
 
     return Config(
         agents=agents,
+        cache=cache,
         cost=cost,
         ingest=ingest,
         queue=queue,

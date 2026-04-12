@@ -120,13 +120,12 @@ def serve_cmd(
     elif provider == "groq":
         _require_env("GROQ_API_KEY", "Groq", "https://console.groq.com/keys")
 
-    import os as _os
     # Propagate web_search config to env so WebSearchSkill can read it
-    _os.environ.setdefault(
+    os.environ.setdefault(
         "SYNTHADOC_WEB_SEARCH_MAX_RESULTS",
         str(cfg.web_search.max_results),
     )
-    if cfg.web_search.provider == "tavily" and not _os.environ.get("TAVILY_API_KEY"):
+    if cfg.web_search.provider == "tavily" and not os.environ.get("TAVILY_API_KEY"):
         typer.echo(
             "Warning: TAVILY_API_KEY is not set. Web search jobs will fail.\n"
             "Get a free key at https://tavily.com",

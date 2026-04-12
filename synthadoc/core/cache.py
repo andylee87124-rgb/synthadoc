@@ -6,15 +6,14 @@ from pathlib import Path
 from typing import Any, Optional
 import aiosqlite
 
-# Bump this constant whenever prompt templates or response schemas change.
-# Any cached entry produced under a previous version is automatically ignored
-# because the version is part of every cache key.
+# Default cache version — overridden by [cache] version in config.toml.
+# Users can bump this in config without touching source code.
 CACHE_VERSION = "4"
 
 
-def make_cache_key(operation: str, inputs: dict) -> str:
+def make_cache_key(operation: str, inputs: dict, version: str = CACHE_VERSION) -> str:
     payload = json.dumps(
-        {"v": CACHE_VERSION, "op": operation, "inputs": inputs}, sort_keys=True
+        {"v": version, "op": operation, "inputs": inputs}, sort_keys=True
     )
     return hashlib.sha256(payload.encode()).hexdigest()[:32]
 

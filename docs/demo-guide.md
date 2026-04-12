@@ -57,6 +57,7 @@ automatically.
 | `url` | `https://` / `http://` prefix · phrases: `fetch url`, `web page`, `website` | httpx + BeautifulSoup HTML cleaning |
 | `markdown` | `.md` / `.txt` extension · phrases: `markdown`, `text file`, `notes` | Direct read, no transformation |
 | `docx` | `.docx` extension · phrases: `word document`, `docx` | python-docx paragraph extraction |
+| `pptx` | `.pptx` extension · phrases: `powerpoint`, `presentation`, `pptx` | python-pptx; each slide as a titled section; speaker notes included |
 | `xlsx` | `.xlsx` / `.csv` extension · phrases: `spreadsheet`, `excel`, `csv` | openpyxl + stdlib csv |
 | `image` | `.png` `.jpg` `.jpeg` `.webp` `.gif` `.tiff` · phrases: `image`, `screenshot`, `diagram`, `photo` | Base64 → vision LLM |
 | `web_search` | Intent phrases only: `search for`, `find on the web`, `look up`, `web search`, `browse` | No file extension — purely intent-driven. Calls Tavily API; fans out top result URLs as individual ingest jobs. Requires `TAVILY_API_KEY`. |
@@ -260,6 +261,7 @@ Use a **second terminal** for all commands below. All plugin commands are now ac
 | `Synthadoc: Query wiki...` | Opens a query modal with markdown-rendered answer and citations |
 | `Synthadoc: Lint report` | Opens a modal showing contradicted pages and orphans |
 | `Synthadoc: Run lint` | Queues a lint job; shows a notice with contradiction + orphan counts |
+| `Synthadoc: Run lint with auto-resolve` | Same but LLM resolves contradictions automatically when confidence ≥ threshold |
 | `Synthadoc: List jobs...` | Opens a filterable jobs table with per-job result details |
 
 ---
@@ -283,12 +285,13 @@ You can also query from Obsidian: open the command palette (`Ctrl/Cmd+P`) →
 
 ### Step 3 — Batch ingest all demo sources
 
-The four source files are pre-built in `raw_sources/`:
+The five source files are pre-built in `raw_sources/`:
 
 | File | Skill | Scenario |
 |------|-------|----------|
 | `turing-enigma-decryption.pdf` | `pdf` (`.pdf` extension) | **A — Clean merge**: enriches `alan-turing` |
 | `computing-pioneers-timeline.xlsx` | `xlsx` (`.xlsx` extension) | **A — Clean merge**: structured timeline, enriches multiple pages |
+| `cs-milestones-overview.pptx` | `pptx` (`.pptx` extension) | **A — Clean merge + new pages**: 6-slide deck; enriches `ada-lovelace`, `alan-turing`, `grace-hopper`; creates new pages for ENIAC, transistor history, and internet origins |
 | `first-compiler-controversy.pdf` | `pdf` (`.pdf` extension) | **B — Conflict**: contradicts `grace-hopper` |
 | `quantum-computing-primer.png` | `image` (`.png` extension) | **C — Orphan**: brand new topic, no existing page links to it |
 
@@ -306,7 +309,7 @@ Both methods enqueue one job per file. Watch all jobs at once:
 synthadoc jobs list -w history-of-computing
 ```
 
-Wait until all four show `completed`. Filter by status:
+Wait until all five show `completed`. Filter by status:
 
 ```
 synthadoc jobs list --status pending -w history-of-computing
@@ -319,7 +322,7 @@ Or from Obsidian: command palette → `Synthadoc: List jobs...` → use the filt
 
 ### Step 4 — Scenario A: Clean merge
 
-Refresh Obsidian after the first two jobs complete.
+Refresh Obsidian after the first three jobs complete.
 
 **`turing-enigma-decryption.pdf`** — open `wiki/alan-turing.md`. New content about
 Bletchley Park, the Bombe machine, and Turing's posthumous recognition has been merged
@@ -328,11 +331,41 @@ into the existing page without contradiction.
 **`computing-pioneers-timeline.xlsx`** — the structured two-sheet workbook (timeline +
 people reference) enriches several pages with new content appended to existing pages.
 
+**`cs-milestones-overview.pptx`** — the 6-slide PowerPoint deck is processed slide by
+slide. Each slide becomes a titled section in the extracted text. Open the ingest log to
+see how the engine mapped slide content to wiki pages:
+
+```
+synthadoc audit history -w history-of-computing
+```
+
+Expected pages touched or created:
+
+| Wiki page | What changed |
+|-----------|-------------|
+| `ada-lovelace.md` | Enriched with the 1843 Bernoulli-number algorithm detail from Slide 2 |
+| `alan-turing.md` | ENIAC context from Slide 3 merged alongside existing Turing content |
+| `grace-hopper.md` | The ENIAC Six detail from Slide 3 merged in |
+| `eniac.md` _(new)_ | Created from Slide 3 — ENIAC weight, speed, and the six programmers |
+| `transistor-and-moores-law.md` _(new)_ | Created from Slide 4 — Bell Labs, Shockley, Moore's Law |
+| `internet-history.md` _(new)_ | Created from Slide 5 — ARPANET, TCP/IP Flag Day |
+
+The speaker notes on each slide are extracted and included in the synthesis context,
+giving the LLM extra background without cluttering the final wiki page.
+
+You can also ingest the deck in one shot via CLI:
+
+```
+synthadoc ingest raw_sources/cs-milestones-overview.pptx -w history-of-computing
+```
+
 Verify with queries that use the new content:
 
 ```
 synthadoc query "What was the Bombe machine and who built it?" -w history-of-computing
 synthadoc query "Who invented FORTRAN and when?" -w history-of-computing
+synthadoc query "Who were the ENIAC Six?" -w history-of-computing
+synthadoc query "When did the modern internet begin?" -w history-of-computing
 ```
 
 ---
@@ -643,28 +676,44 @@ simultaneously. Leave this terminal running.
 
 **2. Register in Claude Desktop config**
 
-Open `%APPDATA%\Claude\claude_desktop_config.json` (Windows) or
-`~/Library/Application Support/Claude/claude_desktop_config.json` (macOS) and add:
+Locate your config file:
+
+| Platform | Path |
+|----------|------|
+| Windows (Store app) | `%LOCALAPPDATA%\Packages\Claude_pzs8sxrjxfjjc\LocalCache\Roaming\Claude\claude_desktop_config.json` |
+| Windows (direct install) | `%APPDATA%\Claude\claude_desktop_config.json` |
+| macOS | `~/Library/Application Support/Claude/claude_desktop_config.json` |
+
+Add the following entry, replacing the wiki path with the **absolute path** to your wiki root:
 
 ```json
 {
   "mcpServers": {
     "synthadoc-history": {
       "command": "synthadoc",
-      "args": ["serve", "--wiki", "history-of-computing", "--mcp-only"]
+      "args": ["serve", "--wiki", "C:\\Users\\you\\wikis\\history-of-computing", "--mcp-only"]
     }
   }
 }
 ```
+
+> **Important:** Use an absolute path for `--wiki`. Relative paths will not resolve because
+> Claude Desktop has no working directory context.
+
+> **Windows PATH note:** Claude Desktop may not inherit your user PATH. If the server fails
+> to start, add the Python Scripts folder (e.g.
+> `C:\Users\you\AppData\Roaming\Python\Python3xx\Scripts`) to your **system** PATH
+> (not user PATH), then restart Claude Desktop fully from the system tray.
 
 `--mcp-only` starts just the MCP transport without the HTTP API — use this when you only need
 Claude access and not the Obsidian plugin. Omit it (use plain `serve`) when running both.
 
 **3. Restart Claude Desktop**
 
-Open Claude Desktop → look for **synthadoc-history** in the MCP tools panel. You should see
-six tools: `synthadoc_ingest`, `synthadoc_query`, `synthadoc_lint`, `synthadoc_search`,
-`synthadoc_status`, `synthadoc_job_status`.
+Fully quit from the system tray (right-click → Quit) and relaunch. Open
+Settings → Local MCP servers — `synthadoc-history` should show a green **running** badge.
+You should see six tools: `synthadoc_ingest`, `synthadoc_query`, `synthadoc_lint`,
+`synthadoc_search`, `synthadoc_status`, `synthadoc_job_status`.
 
 ---
 

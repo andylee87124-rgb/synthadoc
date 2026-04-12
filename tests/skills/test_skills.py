@@ -8,7 +8,7 @@ def test_all_builtin_skills_registered():
     from synthadoc.agents.skill_agent import SkillAgent
     agent = SkillAgent()
     names = [s.name for s in agent.list_skills()]
-    for expected in ("pdf", "url", "markdown", "docx", "xlsx", "image"):
+    for expected in ("pdf", "url", "markdown", "docx", "xlsx", "image", "pptx"):
         assert expected in names
 
 
@@ -20,6 +20,7 @@ def test_detect_skill_by_extension():
     assert agent.detect_skill("report.docx").name == "docx"
     assert agent.detect_skill("data.xlsx").name == "xlsx"
     assert agent.detect_skill("photo.png").name == "image"
+    assert agent.detect_skill("deck.pptx").name == "pptx"
 
 
 def test_detect_skill_by_url_prefix():
@@ -331,3 +332,67 @@ def test_get_resource_cache_avoids_second_read(tmp_path):
     skill.get_resource("data.txt")
     f.write_text("modified", encoding="utf-8")
     assert skill.get_resource("data.txt") == "original"  # served from cache
+
+
+# ── PPTX skill ────────────────────────────────────────────────────────────────
+
+@pytest.mark.asyncio
+async def test_pptx_skill_extracts_slide_text(tmp_path):
+    """PptxSkill extracts title and body text from each slide."""
+    from pptx import Presentation
+    from pptx.util import Inches
+    from synthadoc.skills.pptx.scripts.main import PptxSkill
+
+    path = tmp_path / "deck.pptx"
+    prs = Presentation()
+    layout = prs.slide_layouts[1]  # Title and Content
+
+    slide = prs.slides.add_slide(layout)
+    slide.shapes.title.text = "Intro"
+    slide.placeholders[1].text = "Hello world"
+
+    prs.save(str(path))
+
+    result = await PptxSkill().extract(str(path))
+    assert "Intro" in result.text
+    assert "Hello world" in result.text
+    assert result.metadata["slides"] == 1
+
+
+@pytest.mark.asyncio
+async def test_pptx_skill_includes_speaker_notes(tmp_path):
+    """PptxSkill appends speaker notes when present."""
+    from pptx import Presentation
+    from synthadoc.skills.pptx.scripts.main import PptxSkill
+
+    path = tmp_path / "notes.pptx"
+    prs = Presentation()
+    slide = prs.slides.add_slide(prs.slide_layouts[1])
+    slide.shapes.title.text = "Slide One"
+    slide.notes_slide.notes_text_frame.text = "Remember to demo this"
+    prs.save(str(path))
+
+    result = await PptxSkill().extract(str(path))
+    assert "Remember to demo this" in result.text
+
+
+@pytest.mark.asyncio
+async def test_pptx_skill_empty_presentation(tmp_path):
+    """PptxSkill handles a presentation with no slides without error."""
+    from pptx import Presentation
+    from synthadoc.skills.pptx.scripts.main import PptxSkill
+
+    path = tmp_path / "empty.pptx"
+    Presentation().save(str(path))
+
+    result = await PptxSkill().extract(str(path))
+    assert result.text == ""
+    assert result.metadata["slides"] == 0
+
+
+def test_pptx_detected_by_intent():
+    """Intent keywords route to pptx skill."""
+    from synthadoc.agents.skill_agent import SkillAgent
+    agent = SkillAgent()
+    assert agent.detect_skill("powerpoint").name == "pptx"
+    assert agent.detect_skill("ingest this presentation").name == "pptx"

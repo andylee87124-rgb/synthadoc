@@ -10,8 +10,15 @@ from fastapi import FastAPI, HTTPException, Request, Response
 from pydantic import BaseModel, field_validator
 from starlette.middleware.base import BaseHTTPMiddleware
 
+import logging
+import re
+
+logger = logging.getLogger(__name__)
+
 _MAX_BODY_BYTES = 10 * 1024 * 1024  # 10 MB
 _WORKER_POLL_SECONDS = 2
+_WIKILINK_RE = re.compile(r"\[\[([^\]]+)\]\]")
+_FM_RE = re.compile(r"^---\s*\n(.*?)\n---", re.DOTALL)
 
 
 class ContentSizeLimitMiddleware(BaseHTTPMiddleware):
@@ -78,7 +85,8 @@ async def _worker_loop(orch) -> None:
                     auto_resolve = job.payload.get("auto_resolve", False)
                     await orch._run_lint(job.id, scope=scope, auto_resolve=auto_resolve)
         except Exception:
-            pass  # errors are recorded in jobs.db by the runner; keep the loop alive
+            logger.exception("Worker loop error — job recorded in jobs.db; continuing")
+
         await asyncio.sleep(_WORKER_POLL_SECONDS)
 
 
@@ -161,7 +169,7 @@ def create_app(wiki_root: Path, max_body_bytes: int = _MAX_BODY_BYTES) -> FastAP
         """Run analysis pass on a source and return structured result without writing pages."""
         from synthadoc.agents.ingest_agent import IngestAgent
         from synthadoc.providers import make_provider
-        from synthadoc.skills.skill_agent import SkillAgent
+        from synthadoc.agents.skill_agent import SkillAgent
         orch = app.state.orch
         agent = IngestAgent(
             provider=make_provider("ingest", orch._cfg),
@@ -169,6 +177,7 @@ def create_app(wiki_root: Path, max_body_bytes: int = _MAX_BODY_BYTES) -> FastAP
             log_writer=orch._log, audit_db=orch._audit,
             cache=orch._cache, max_pages=orch._cfg.ingest.max_pages_per_ingest,
             wiki_root=orch._root,
+            cache_version=orch._cfg.cache.version,
         )
         skill = SkillAgent()
         extracted = await skill.extract(req.source)
@@ -201,10 +210,7 @@ def create_app(wiki_root: Path, max_body_bytes: int = _MAX_BODY_BYTES) -> FastAP
 
     @app.get("/lint/report")
     async def lint_report():
-        import re as _re
         import yaml as _yaml
-        _WIKILINK_RE = _re.compile(r"\[\[([^\]]+)\]\]")
-        _FM_RE = _re.compile(r"^---\s*\n(.*?)\n---", _re.DOTALL)
         _SKIP = {"index", "log", "dashboard"}
         wiki_dir = wiki_root / "wiki"
         pages = list(wiki_dir.glob("*.md"))

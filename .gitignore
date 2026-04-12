@@ -11,7 +11,7 @@ build/
 venv/
 node_modules/
 obsidian-plugin/node_modules/
-history-of-computing/
+/history-of-computing/
 .VSCodeCounter/
 
 # synthadoc operational — never commit

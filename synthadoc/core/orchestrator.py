@@ -58,6 +58,8 @@ class Orchestrator:
 
     async def _run_ingest(self, job_id: str, source: str, auto_confirm: bool,
                           force: bool = False) -> None:
+        # auto_confirm is reserved for when cost gate is wired to the ingest flow (v0.2+).
+        # Cost tracking returns $0.0000 in v0.1, so cost_guard.check() is not called here yet.
         from synthadoc.agents.ingest_agent import IngestAgent
         try:
             agent = IngestAgent(
@@ -65,6 +67,7 @@ class Orchestrator:
                 store=self._store, search=self._search,
                 log_writer=self._log, audit_db=self._audit,
                 cache=self._cache, max_pages=self._cfg.ingest.max_pages_per_ingest,
+                cache_version=self._cfg.cache.version,
             )
             result = await agent.ingest(source, force=force, bust_cache=force)
             # Fan out web search child sources as individual ingest jobs
