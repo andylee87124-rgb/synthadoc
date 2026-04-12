@@ -51,7 +51,10 @@ def ingest_cmd(
         raise typer.Exit(1)
 
     for s in sources:
-        abs_source = str(Path(s).resolve())
+        s = s.strip()
+        if not s or s.startswith("#"):
+            continue
+        abs_source = s if s.startswith(("http://", "https://")) else str(Path(s).resolve())
         if analyse_only:
             import json as _json
             result = post(wiki, "/analyse", {"source": abs_source})

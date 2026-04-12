@@ -5,7 +5,6 @@ from __future__ import annotations
 import re
 import yaml
 from pathlib import Path
-from typing import Optional
 
 import typer
 
@@ -43,7 +42,6 @@ app.add_typer(lint_app, name="lint")
 @lint_app.command("run")
 def lint_cmd(
     scope: str = typer.Option("all", "--scope", help="all/contradictions/orphans/stale"),
-    since: Optional[str] = typer.Option(None, "--since"),
     auto_resolve: bool = typer.Option(False, "--auto-resolve"),
     wiki: str = typer.Option(".", "--wiki", "-w"),
 ):

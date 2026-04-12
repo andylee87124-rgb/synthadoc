@@ -518,3 +518,93 @@ async def test_analyse_is_cached_on_second_call(tmp_wiki):
     first_calls = call_count
     await agent._analyse("some text", bust_cache=False)
     assert call_count == first_calls  # second call hits cache
+
+
+@pytest.mark.asyncio
+async def test_ingest_uses_page_content_for_new_pages(tmp_wiki):
+    """When decision includes page_content, new page body uses it (not raw source text)."""
+    import itertools
+    from unittest.mock import AsyncMock
+    from synthadoc.providers.base import CompletionResponse
+
+    analyse_resp = CompletionResponse(
+        text='{"entities":["Ada Lovelace"],"tags":["computing"],"summary":"Ada Lovelace was the first programmer.","relevant":true}',
+        input_tokens=50, output_tokens=20)
+    decision_resp = CompletionResponse(
+        text='{"reasoning":"new topic","action":"create","target":"","new_slug":"ada-lovelace",'
+             '"update_content":"","page_content":"# Ada Lovelace\\n\\nAda Lovelace (1815-1852) '
+             'is widely regarded as the first computer programmer. She collaborated with '
+             '[[charles-babbage]] on the [[analytical-engine]]."}',
+        input_tokens=80, output_tokens=40)
+
+    provider = AsyncMock()
+    provider.complete = AsyncMock(side_effect=itertools.cycle([analyse_resp, decision_resp]))
+
+    store = WikiStorage(tmp_wiki / "wiki")
+    search = HybridSearch(store, tmp_wiki / ".synthadoc" / "embeddings.db")
+    log = LogWriter(tmp_wiki / "wiki" / "log.md")
+    audit = AuditDB(tmp_wiki / ".synthadoc" / "audit.db")
+    await audit.init()
+    cache = CacheManager(tmp_wiki / ".synthadoc" / "cache.db")
+    await cache.init()
+
+    source = tmp_wiki / "raw_sources" / "ada.md"
+    source.write_text("Ada Lovelace raw text", encoding="utf-8")
+
+    from unittest.mock import patch
+    agent = IngestAgent(provider=provider, store=store, search=search,
+                        log_writer=log, audit_db=audit, cache=cache,
+                        max_pages=15, wiki_root=tmp_wiki)
+    with patch.object(IngestAgent, "_update_overview", AsyncMock()):
+        result = await agent.ingest(str(source))
+
+    assert "ada-lovelace" in result.pages_created
+    page = store.read_page("ada-lovelace")
+    assert "[[charles-babbage]]" in page.content
+    assert "[[analytical-engine]]" in page.content
+    assert "Ada Lovelace raw text" not in page.content  # raw text not used
+
+
+@pytest.mark.asyncio
+async def test_ingest_preserves_wikilinks_in_update_content(tmp_wiki):
+    """update_content from decision is written to page verbatim — [[wikilinks]] preserved."""
+    import itertools
+    from unittest.mock import AsyncMock
+    from synthadoc.providers.base import CompletionResponse
+
+    store = WikiStorage(tmp_wiki / "wiki")
+    store.write_page("alan-turing", "# Alan Turing\n\nFounder of computer science.", {})
+
+    analyse_resp = CompletionResponse(
+        text='{"entities":["Turing","Enigma"],"tags":["cryptography"],"summary":"Turing broke Enigma.","relevant":true}',
+        input_tokens=50, output_tokens=20)
+    decision_resp = CompletionResponse(
+        text='{"reasoning":"adds info","action":"update","target":"alan-turing",'
+             '"new_slug":"","update_content":"## Enigma\\n\\nTuring led the team that broke '
+             'the [[enigma]] cipher at [[bletchley-park]].","page_content":""}',
+        input_tokens=80, output_tokens=40)
+
+    provider = AsyncMock()
+    provider.complete = AsyncMock(side_effect=itertools.cycle([analyse_resp, decision_resp]))
+
+    search = HybridSearch(store, tmp_wiki / ".synthadoc" / "embeddings.db")
+    log = LogWriter(tmp_wiki / "wiki" / "log.md")
+    audit = AuditDB(tmp_wiki / ".synthadoc" / "audit.db")
+    await audit.init()
+    cache = CacheManager(tmp_wiki / ".synthadoc" / "cache.db")
+    await cache.init()
+
+    source = tmp_wiki / "raw_sources" / "enigma.md"
+    source.write_text("Turing broke Enigma at Bletchley Park.", encoding="utf-8")
+
+    from unittest.mock import patch
+    agent = IngestAgent(provider=provider, store=store, search=search,
+                        log_writer=log, audit_db=audit, cache=cache,
+                        max_pages=15, wiki_root=tmp_wiki)
+    with patch.object(IngestAgent, "_update_overview", AsyncMock()):
+        result = await agent.ingest(str(source))
+
+    assert "alan-turing" in result.pages_updated
+    page = store.read_page("alan-turing")
+    assert "[[enigma]]" in page.content
+    assert "[[bletchley-park]]" in page.content

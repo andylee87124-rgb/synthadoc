@@ -32,6 +32,32 @@ def test_ingest_manifest_file(tmp_path):
     assert mock_post.call_count == 1
 
 
+def test_ingest_manifest_urls_not_mangled(tmp_path):
+    """URLs in a manifest file must be passed through unchanged — not resolved as paths."""
+    manifest = tmp_path / "sources.txt"
+    manifest.write_text("https://en.wikipedia.org/wiki/Alan_Turing\n", encoding="utf-8")
+    with patch("synthadoc.cli.ingest.post", return_value={"job_id": "job-1"}) as mock_post:
+        result = runner.invoke(app, ["ingest", "--file", str(manifest)])
+    assert result.exit_code == 0
+    payload = mock_post.call_args[0][2]
+    assert payload["source"] == "https://en.wikipedia.org/wiki/Alan_Turing"
+
+
+def test_ingest_manifest_skips_blanks_and_comments(tmp_path):
+    """Blank lines and # comment lines in a manifest are silently skipped."""
+    doc = tmp_path / "doc.md"
+    doc.write_text("# Doc", encoding="utf-8")
+    manifest = tmp_path / "sources.txt"
+    manifest.write_text(
+        f"# this is a comment\n\n{doc}\n\n# another comment\n",
+        encoding="utf-8",
+    )
+    with patch("synthadoc.cli.ingest.post", return_value={"job_id": "job-1"}) as mock_post:
+        result = runner.invoke(app, ["ingest", "--file", str(manifest)])
+    assert result.exit_code == 0
+    assert mock_post.call_count == 1   # only doc.md, not blanks or comments
+
+
 def test_ingest_force_bypasses_dedup(tmp_path):
     """--force sets force=True in the HTTP payload sent to the server."""
     source = tmp_path / "doc.md"

@@ -87,7 +87,7 @@ Every page is a plain Markdown file with YAML frontmatter. No proprietary format
 | Value | How |
 |-------|-----|
 | **Faster onboarding** | New team members query the wiki instead of digging through documents |
-| **Audit trail** | Every ingest recorded in `audit.db` with source hash, cost, and timestamp |
+| **Audit trail** | Every ingest recorded in `audit.db` with source hash, token count, and timestamp |
 | **Cost control** | Configurable soft-warn and hard-gate thresholds; 3-layer cache reduces repeat spend |
 | **Compliance** | Local-first — source documents and compiled knowledge never leave your machine |
 | **Extensibility** | Hooks fire on every event; custom skills load without a server restart |
@@ -109,12 +109,13 @@ Every page is a plain Markdown file with YAML frontmatter. No proprietary format
 | MCP server built-in | **Yes** | No | No | No |
 | Obsidian integration | **Yes** | No | No | No |
 | Cost guard + audit trail | **Yes** | No | No | No |
-| Hook / CI integration | **Yes** | No | No | No |
+| Hook / CI integration | **Yes** (2 events) | No | No | No |
 | Offline browsable artifact | **Yes** | No | No | No |
 | Multi-wiki isolation | **Yes** | No | No | No |
 | Web search → wiki pages | **Yes** | No | No | No |
 | Free LLM tier support | **Yes** (Gemini, Groq) | No | No | No |
 | Auto wiki overview page | **Yes** | No | No | No |
+| Resumable job queue + retry | **Yes** | No | No | No |
 
 ### Key differentiators vs. RAG
 
@@ -124,40 +125,57 @@ RAG chunks documents and retrieves them at query time. Synthadoc **compiles** kn
 - **Knowledge is linked, not scattered.** `[[wikilinks]]` connect related pages into a navigable graph visible in Obsidian and queryable with Dataview.
 - **The artifact outlives the tool.** Close the server, open the wiki folder in any Markdown editor — the knowledge is all there, human-readable, no proprietary format.
 - **Cost-efficient at scale.** Two-step ingest with cached analysis means repeated ingest of similar sources costs near-zero tokens. Three cache layers stack for lint and query too.
+- **Ingest is durable, not fragile.** Every ingest request becomes a queued job with automatic retry and a persistent audit record. Batch a hundred documents and resume after a crash — no work is lost.
 
 ---
 
 ## Architecture
 
-```
-┌─────────────────────────────────────────────────────────────┐
-│  User surfaces                                              │
-│  CLI (synthadoc …)  │  Obsidian plugin  │  Claude MCP       │
-└────────────┬────────────────┬─────────────────┬─────────────┘
-             │  HTTP API      │  HTTP API        │  stdio MCP
-             ▼                ▼                  ▼
-┌─────────────────────────────────────────────────────────────┐
-│  FastAPI server  (localhost:PORT)                            │
-│  Job queue (SQLite, asyncio)                                │
-└──────────────────────────┬──────────────────────────────────┘
-                           │  dispatch
-          ┌────────────────┼────────────────┐
-          ▼                ▼                ▼
-    IngestAgent      QueryAgent        LintAgent
-    (×4 parallel)    (×1)              (×N)
-          │                │                │
-          ▼                ▼                ▼
-    SkillAgent         BM25 Search     Contradiction /
-    (lazy-loads        + LLM           Orphan detection
-     pdf/url/…)        synthesis
-          │
-          ▼
-    LLM Providers
-    (Anthropic / OpenAI / Gemini / Groq / Ollama)
-          │
-          ▼
-    Storage
-    wiki/*.md  │  embeddings.db  │  cache.db  │  audit.db  │  jobs.db
+```mermaid
+flowchart TB
+    subgraph ACCESS["  Access Layer  "]
+        direction LR
+        CLI["CLI\nsynthadoc …"]
+        OBS["Obsidian Plugin"]
+        MCP["Claude MCP\n⚠ optional"]
+    end
+
+    subgraph ENGINE["  Synthadoc Engine  ·  localhost:PORT  "]
+        direction LR
+        API["HTTP REST API"]
+        QUEUE["Job Queue\nSQLite · asyncio · auto-retry"]
+        API --> QUEUE
+    end
+
+    subgraph PROC["  Processing Agents  "]
+        direction LR
+        IA["IngestAgent\n+ SkillAgent\nPDF · URL · Web · Image · DOCX · …"]
+        QA["QueryAgent\nBM25 + LLM synthesis"]
+        LA["LintAgent\nContradiction · Orphan detection"]
+    end
+
+    subgraph OPS["  Admin & Ops  "]
+        direction LR
+        ADMIN["Health check · Install · Uninstall\nAudit · Cost report · Jobs monitor · Cache"]
+    end
+
+    subgraph PROV["  LLM Providers  "]
+        LLM["Anthropic  ·  OpenAI  ·  Gemini  ·  Groq  ·  Ollama"]
+    end
+
+    subgraph STORE["  Storage  "]
+        DB["wiki/*.md  ·  embeddings.db  ·  cache.db  ·  audit.db  ·  jobs.db"]
+    end
+
+    CLI -- HTTP --> API
+    OBS -- HTTP --> API
+    MCP -. "stdio MCP" .-> ENGINE
+
+    QUEUE --> IA & QA & LA
+
+    IA & QA & LA --> PROV
+    IA & QA & LA --> STORE
+    ADMIN -. "HTTP / direct" .-> STORE
 ```
 
 For full architecture details, data models, API reference, and plugin development guide see **[docs/design.md](docs/design.md)**.
@@ -175,10 +193,10 @@ For full architecture details, data models, API reference, and plugin developmen
 - **Two-step ingest** — `_analyse()` caches entity extraction + summary; decision prompt uses summary instead of full text; reduces cost on large documents
 - **purpose.md scope filtering** — define what belongs in your wiki; the LLM skips out-of-scope sources cleanly
 - **overview.md auto-summary** — 2-paragraph wiki overview regenerated automatically after every ingest that creates or updates pages
-- **Audit CLI** — `synthadoc audit history / cost / events` query `audit.db` without needing `sqlite3`; `--analyse-only` flag previews ingest analysis before writing pages
+- **Audit CLI** — `synthadoc audit history / cost / events` query `audit.db` without needing direct access; `--analyse-only` flag previews ingest analysis before writing pages
 - **3-layer cache** — embedding cache, LLM response cache, provider prompt cache
 - **Cost guards** — configurable soft-warn and hard-gate USD thresholds
-- **Hook system** — shell commands on 8 lifecycle events; blocking or background
+- **Hook system** — shell commands on `on_ingest_complete` and `on_lint_complete` lifecycle events; blocking or background; context passed as JSON on stdin; community hook library in [`hooks/`](hooks/)
 - **Job queue** — SQLite-backed, persistent, retry with exponential backoff; non-retryable errors (`failed`) distinguished from exhausted-retry errors (`dead`)
 - **Startup banner** — ASCII logo with version, port, wiki, and PID on `synthadoc serve`; plain-text version served at `GET /`
 - **Multi-wiki** — unlimited isolated wikis, each on its own port
@@ -191,28 +209,77 @@ For full architecture details, data models, API reference, and plugin developmen
 
 ### Prerequisites
 
-- Python 3.11+
-- An LLM API key — **Gemini Flash is free** (15 RPM / 1M tokens/day, no credit card): [aistudio.google.com/app/apikey](https://aistudio.google.com/app/apikey). Alternatively: [Anthropic](https://console.anthropic.com/), [OpenAI](https://platform.openai.com/api-keys), [Groq](https://console.groq.com/keys) (free tier), or local [Ollama](https://ollama.com) (no key needed).
+| Requirement | Version | Notes |
+|-------------|---------|-------|
+| Python | 3.11+ | |
+| Node.js | 18+ | Obsidian plugin build only |
+| Git | any | |
+| LLM API key | — | At least one required (see below) |
+| Tavily API key | — | Optional — web search feature only |
 
-### Install Synthadoc
+**LLM API key — at least one required:**
+
+| Provider | Free tier | Get key |
+|----------|-----------|---------|
+| **Gemini Flash** | Yes — 15 RPM / 1M tokens/day, no credit card | [aistudio.google.com](https://aistudio.google.com/app/apikey) |
+| Groq | Yes — rate-limited | [console.groq.com](https://console.groq.com/keys) |
+| Ollama | Yes — runs locally, no key | [ollama.com](https://ollama.com) |
+| Anthropic | No | [console.anthropic.com](https://console.anthropic.com/) |
+| OpenAI | No | [platform.openai.com](https://platform.openai.com/api-keys) |
+
+**Tavily API key (optional — enables web search):**
+Get a free key at [tavily.com](https://tavily.com). Without it, web search jobs will fail but all other features work normally.
+
+---
+
+### Step 1 — Clone and install
 
 ```bash
-pip install synthadoc
+git clone https://github.com/paulmchen/synthadoc.git
+cd synthadoc
+pip install -e ".[dev]"
 ```
 
-### Set your API key
+### Step 2 — Run the Python test suite
+
+Validate that the Python engine builds and all tests pass before proceeding:
 
 ```bash
-# macOS / Linux
-export ANTHROPIC_API_KEY=sk-ant-…
-
-# Windows (PowerShell)
-$env:ANTHROPIC_API_KEY = "sk-ant-…"
+pytest --ignore=tests/performance/ -q
 ```
 
-To persist the key, add the export to your shell profile (`~/.bashrc`, `~/.zshrc`, or Windows user environment variables).
+Expected: all tests pass, 0 failures. If any fail, check the error output before continuing.
 
-### Verify
+Performance benchmarks (optional — Linux/macOS, measures SLOs):
+
+```bash
+pytest tests/performance/ -v --benchmark-disable
+```
+
+### Step 3 — Build and test the Obsidian plugin
+
+```bash
+cd obsidian-plugin
+npm install
+npm run build    # produces main.js
+npm test         # runs Vitest unit tests
+cd ..
+```
+
+### Step 4 — Set your API keys
+
+```bash
+# macOS / Linux — add to ~/.bashrc or ~/.zshrc to persist
+export GEMINI_API_KEY=AIza…          # free tier — recommended starting point
+export ANTHROPIC_API_KEY=sk-ant-…    # if using Anthropic
+export TAVILY_API_KEY=tvly-…         # optional — web search only
+
+# Windows (PowerShell) — add to your profile to persist
+$env:GEMINI_API_KEY = "AIza…"
+$env:TAVILY_API_KEY = "tvly-…"
+```
+
+### Step 5 — Verify
 
 ```bash
 synthadoc --version
@@ -239,72 +306,67 @@ The guide covers:
 
 ## Configuration
 
+> **You do not need to configure anything to run the demo.** The demo wiki
+> ships with its own settings and sensible built-in defaults cover everything
+> else. Set your API key env var, run `synthadoc serve`, and go.
+>
+> Read this section when you are ready to run a real wiki or change a default.
+
+### How configuration works
+
+Settings are resolved in three layers — later layers win:
+
+```
+1. Built-in defaults          (always applied)
+2. ~/.synthadoc/config.toml   (global — your preferences across all wikis)
+3. <wiki-root>/.synthadoc/config.toml   (per-project — overrides for one wiki)
+```
+
+Neither file is required. If both are absent, the built-in defaults take effect.
+
 ### Global config — `~/.synthadoc/config.toml`
+
+**Use this to set preferences that apply to every wiki on your machine** —
+primarily your default LLM provider and the wiki registry.
 
 ```toml
 [agents]
-default = { provider = "anthropic", model = "claude-opus-4-6" }
-lint    = { model = "claude-haiku-4-5-20251001" }   # cheaper model for lint
+default = { provider = "gemini", model = "gemini-2.0-flash" }  # free tier
+lint    = { provider = "groq",   model = "llama-3.3-70b-versatile" }  # cheaper for lint
 
 [wikis]
 research = "~/wikis/research"
 work     = "~/wikis/work"
 ```
 
-To switch to Gemini Flash (free tier):
-
-```toml
-[agents]
-default = { provider = "gemini", model = "gemini-2.0-flash" }
-```
+Common reason to edit: switching from the Anthropic default to Gemini Flash
+(free tier) so all wikis use it without touching each project config.
 
 ### Per-project config — `<wiki-root>/.synthadoc/config.toml`
 
+**Use this when one wiki needs different settings from the global default** —
+a different port, tighter cost limits, wiki-specific hooks, or web search.
+
 ```toml
 [server]
-port = 7071          # each wiki needs its own port
+port = 7071          # required if running more than one wiki simultaneously
 
 [cost]
 soft_warn_usd = 0.50
 hard_gate_usd = 2.00
 
-[ingest]
-max_pages_per_ingest = 15
-
 [web_search]
 provider    = "tavily"
-max_results = 20         # URLs fetched per query; each becomes an ingest job
-
-[logs]
-level        = "INFO"   # DEBUG | INFO | WARNING | ERROR
-max_file_mb  = 5
-backup_count = 5
+max_results = 20
 
 [hooks]
-on_ingest_complete = "python hooks/auto_commit.py"
+on_ingest_complete = "python git-auto-commit.py"
 ```
+
+Common reason to edit: each wiki needs its own port when running multiple
+wikis at the same time.
 
 Full config reference: [docs/design.md — Configuration](docs/design.md#configuration).
-
----
-
-## Running Tests
-
-```bash
-# Install dev dependencies
-pip install -e ".[dev]"
-
-# Run all tests
-pytest
-
-# With coverage report
-pytest --cov=synthadoc --cov-report=term-missing
-
-# Run a specific test module
-pytest tests/core/test_logging_config.py -v
-```
-
-The test suite covers: config loading, job queue, orchestrator, cost guard, cache, hooks, scheduler, HTTP API, MCP server, all agents, all skills, storage, search, CLI commands, and security/performance benchmarks.
 
 ---
 
@@ -317,7 +379,7 @@ The test suite covers: config loading, job queue, orchestrator, cost guard, cach
 synthadoc install my-wiki --target ~/wikis/my-wiki
 
 # Install the demo (includes pre-built pages and raw sources)
-synthadoc install history --target ~/wikis/history --demo
+synthadoc install history-of-computing --target ~/wikis/history-of-computing --demo
 
 # List available demo templates
 synthadoc demo list
@@ -349,8 +411,17 @@ synthadoc ingest https://example.com/article -w my-wiki
 # Entire folder (parallel, up to max_parallel_ingest at a time)
 synthadoc ingest --batch raw_sources/ -w my-wiki
 
-# Manifest file (one path or URL per line)
-synthadoc ingest --batch --file sources.txt -w my-wiki
+# Manifest file — ingest a curated list of sources in one shot.
+# sources.txt: one entry per line; each line is either an absolute file path
+# (PDF, DOCX, PPTX, MD, …) or a URL. Blank lines and # comments are ignored.
+# Each entry becomes a separate job in the queue, processed sequentially.
+#
+# Example sources.txt:
+#   /home/user/docs/research-paper.pdf
+#   /home/user/slides/keynote.pptx
+#   https://en.wikipedia.org/wiki/Alan_Turing
+#   # this line is ignored
+synthadoc ingest --file sources.txt -w my-wiki
 
 # Force re-ingest (bypass deduplication and cache)
 synthadoc ingest --force report.pdf -w my-wiki
@@ -374,9 +445,6 @@ synthadoc lint run -w my-wiki
 
 # Only contradictions
 synthadoc lint run --scope contradictions -w my-wiki
-
-# Only since a date
-synthadoc lint run --since 2026-01-01 -w my-wiki
 
 # Auto-apply high-confidence resolutions
 synthadoc lint run --auto-resolve -w my-wiki
@@ -417,21 +485,18 @@ synthadoc ingest report.pdf --analyse-only -w my-wiki
 ### Audit trail
 
 ```bash
-# Last 20 ingest records (source, pages, tokens, cost)
-synthadoc audit history -w my-wiki
+# Ingest history: timestamp, source file, wiki page, tokens, cost
+synthadoc audit history -w my-wiki            # last 50 records
+synthadoc audit history -n 100 -w my-wiki     # last 100 records
+synthadoc audit history --json -w my-wiki     # raw JSON for scripting
 
-# Token spend + cost for last 30 days (or --days N)
-synthadoc audit cost -w my-wiki
+# Token usage: totals + daily breakdown (cost always $0.0000 in v0.1)
+synthadoc audit cost -w my-wiki               # last 30 days
+synthadoc audit cost --days 7 -w my-wiki      # last 7 days
 
 # Audit events: contradictions found, auto-resolutions, cost gate triggers
-synthadoc audit events -w my-wiki
-```
-
-### Searching without LLM
-
-```bash
-# BM25 keyword search — instant, zero tokens
-synthadoc search "Turing machine" -w my-wiki
+synthadoc audit events -w my-wiki             # last 100 events
+synthadoc audit events --json -w my-wiki      # raw JSON for scripting
 ```
 
 ### Scheduling recurring jobs
@@ -464,20 +529,21 @@ synthadoc uninstall my-wiki
 ### Health and status
 
 ```bash
-# Wiki statistics: pages, queue depth, spend, cache hit rate
+# Wiki statistics: pages, queue depth, cache hit rate
 synthadoc status -w my-wiki
 
 # Liveness probe (useful in scripts and monitoring)
+# Port is per-wiki — check [server] port in <wiki-root>/.synthadoc/config.toml
+# Default is 7070; each additional wiki uses its own port (7071, 7072, …)
 curl http://127.0.0.1:7070/health
 ```
 
 Expected `status` output:
 ```
-Wiki: my-wiki  |  Pages: 34  |  Sources: 12
-Last ingest: 4 min ago (report.pdf)
-Queue: 0 jobs pending  |  Dead jobs: 1
-Token spend (30d): $1.84  |  Cache savings: $0.72 (28%)
-Contradictions: 2 unresolved  |  Orphan pages: 1
+Wiki:         /home/user/wikis/my-wiki
+Pages:        34
+Jobs pending: 0
+Jobs total:   12
 ```
 
 ### Logs
@@ -500,6 +566,7 @@ tail -f .synthadoc/logs/synthadoc.log | jq .
 tail -f .synthadoc/logs/synthadoc.log | jq 'select(.level == "ERROR")'
 
 # Filter to a specific job
+# job_id is present only on records logged in job context (ingest/lint workers)
 tail -f .synthadoc/logs/synthadoc.log | jq 'select(.job_id == "abc123")'
 ```
 
@@ -510,26 +577,25 @@ tail -f .synthadoc/logs/synthadoc.log | jq 'select(.job_id == "abc123")'
 ### Audit trail
 
 ```bash
-# Ingest history (no sqlite3 needed)
-synthadoc audit history -w my-wiki          # last 20 records
-synthadoc audit cost -w my-wiki             # spend summary, last 30 days
-synthadoc audit cost --days 7 -w my-wiki    # weekly view
-synthadoc audit events -w my-wiki           # contradictions, resolutions, cost gates
+synthadoc audit history -w my-wiki          # table: timestamp, source file, wiki page, tokens, cost
+synthadoc audit history -n 100 -w my-wiki   # last 100 records (default 50)
+synthadoc audit history --json -w my-wiki   # raw JSON for scripting
 
-# Direct sqlite3 queries for custom analysis
-sqlite3 .synthadoc/audit.db \
-  "SELECT source, hash, cost_usd, ingested_at FROM ingest_log ORDER BY ingested_at DESC LIMIT 20"
-sqlite3 .synthadoc/audit.db \
-  "SELECT SUM(cost_usd) FROM ingest_log"
+synthadoc audit cost -w my-wiki             # total tokens + daily breakdown, last 30 days
+synthadoc audit cost --days 7 -w my-wiki    # weekly view
+synthadoc audit cost --json -w my-wiki      # {total_tokens, total_cost_usd, daily: [...]}
+
+synthadoc audit events -w my-wiki           # table: timestamp, job_id, event type, metadata
+synthadoc audit events --json -w my-wiki    # raw JSON
 ```
+
+> **Note:** `cost_usd` is always `$0.0000` in v0.1 — per-model pricing is not yet implemented. Token counts are accurate.
 
 ### Cache management
 
 ```bash
-# Show cache stats (in status output)
-synthadoc status -w my-wiki
-
-# Wipe all LLM response cache entries
+# Remove all cached LLM responses
+# Output: "Cache cleared: N entries removed."
 synthadoc cache clear -w my-wiki
 ```
 
@@ -575,11 +641,11 @@ synthadoc ingest --force problem.pdf -w my-wiki
 Every significant event is appended as a Markdown entry:
 
 ```markdown
-## 2026-04-10 14:32 — Ingest: constitutional-ai.pdf
-- Pages created: `constitutional-ai`
-- Pages updated: `ai-alignment-overview`
-- Pages flagged (contradiction): `reward-hacking` ⚠
-- Tokens: 4,820  |  Cost: $0.031  |  Cache hits: 3
+## 2026-04-10 14:32 | INGEST | constitutional-ai.pdf
+- Created: ['constitutional-ai']
+- Updated: ['ai-alignment-overview']
+- Flagged: ['reward-hacking']
+- Tokens: 4,820 | Cost: $0.0000 | Cache hits: 3
 ```
 
 Open `log.md` in Obsidian to browse and search the full history.
@@ -622,6 +688,19 @@ SQLite, append-only. Records: every ingest (source path, SHA-256, cost, timestam
 
 ### Adding a custom skill (new file format)
 
+Skills tell Synthadoc how to extract text from a source it doesn't understand out of the box. Add one when you have a proprietary or domain-specific format:
+
+| You have | Skill you'd write |
+|----------|------------------|
+| Notion workspace export (`.zip`) | Unzip, walk pages, strip Notion-specific markup |
+| Confluence space export (`.xml`) | Parse XML, extract page bodies and metadata |
+| Slack export archive | Walk channels/messages JSON, format as conversation transcript |
+| Internal `.docx` template with custom fields | Strip template boilerplate, extract only the filled-in sections |
+| API endpoint or internal database | Fetch records, render as structured Markdown |
+| Proprietary binary format (CAD, ERP data) | Convert to text using a vendor SDK, return plain content |
+
+Skills are Apache-2.0 licensed — no AGPL obligation on your own skill code.
+
 1. Create `<wiki-root>/skills/my_format.py` (or `~/.synthadoc/skills/` for global availability).
 2. Subclass `BaseSkill` (Apache-2.0 licensed — no AGPL obligation on your skill):
 
@@ -638,9 +717,9 @@ class NotionSkill(BaseSkill):
             extensions=[".notion.zip"],
         )
 
-    def extract(self, source: str) -> ExtractedContent:
+    async def extract(self, source: str) -> ExtractedContent:
         # … your extraction logic …
-        return ExtractedContent(title="My Page", body="extracted text …")
+        return ExtractedContent(text="extracted text …", source_path=source, metadata={})
 ```
 
 3. Drop the file in the skills directory. Synthadoc hot-loads it on the next ingest — no restart needed.
@@ -680,9 +759,9 @@ Hooks are shell commands (any language) that receive a JSON context on stdin:
 import json, subprocess, sys
 ctx = json.load(sys.stdin)
 if ctx["pages_created"] or ctx["pages_updated"]:
-    subprocess.run(["git", "add", "-A"], cwd=ctx["wiki_root"])
+    subprocess.run(["git", "add", "-A"], cwd=ctx["wiki"])
     subprocess.run(["git", "commit", "-m", f"ingest: {ctx['source']}"],
-                   cwd=ctx["wiki_root"])
+                   cwd=ctx["wiki"])
 ```
 
 Register in `.synthadoc/config.toml`:
@@ -692,12 +771,12 @@ Register in `.synthadoc/config.toml`:
 on_ingest_complete = "python hooks/auto_commit.py"
 ```
 
-Available events: `on_ingest_complete`, `on_ingest_failed`, `on_contradiction_found`, `on_lint_complete`, `on_query_saved`, `on_batch_complete`, `on_cost_warning`, `on_dead_job`.
+Available events: `on_ingest_complete`, `on_lint_complete`.
 
 Set `blocking = true` to make the hook gate the operation:
 
 ```toml
-on_contradiction_found = { cmd = "python hooks/notify.py", blocking = true }
+on_ingest_complete = { cmd = "python hooks/auto_commit.py", blocking = true }
 ```
 
 ### Cache invalidation control
@@ -725,7 +804,7 @@ Target: week of 2026-04-25.
 | **Vector search + re-ranking** | Hybrid BM25 + `fastembed` local vectors; better recall on semantically related queries |
 | **Graph-aware retrieval** | Multi-hop wikilink traversal for queries like "What connects Turing to von Neumann?" |
 | **Larger corpus support** | Sharded index, incremental embedding updates, streaming ingest for very large documents |
-| **Obsidian plugin: web search modal** | Full UI for `search for:` intent queries — type a topic, watch pages appear live |
+| **Obsidian plugin: web search live view** | Watch pages appear as results stream in — job polling and live result panel (basic modal already in v0.1) |
 | **Mistral + Bedrock providers** | Additional OpenAI-compatible and AWS-native LLM backends |
 
 ---

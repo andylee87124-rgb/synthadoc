@@ -53,6 +53,10 @@ _DECISION_PROMPT = (
     "You maintain a knowledge wiki. Decide how to handle a new source document.\n"
     "Return ONLY valid JSON - no markdown fences, no explanation.\n\n"
     "First write a 'reasoning' field explaining your decision, then set 'action'.\n\n"
+    "WIKILINKS: Whenever you write page content (update_content or page_content), cross-reference\n"
+    "related topics using [[slug]] notation where slug matches a page listed below.\n"
+    "Example: 'Turing worked at [[bletchley-park]] on the [[enigma]] cipher.'\n"
+    "Only link to pages that actually exist in the wiki (slugs shown below).\n\n"
     "Decision rules (apply in this order):\n\n"
     "RULE 1 — FLAG: If the new source DISPUTES or ARGUES AGAINST a factual claim in an existing page,\n"
     "use action='flag'. This includes academic debates, alternative historical interpretations,\n"
@@ -61,10 +65,12 @@ _DECISION_PROMPT = (
     "-> action='flag', target=the slug of the page whose claim is disputed\n\n"
     "RULE 2 — UPDATE: If the source adds new information about a subject ALREADY covered by an existing page,\n"
     "and there is no factual dispute, use action='update'.\n"
-    "-> action='update', target=slug of page to extend, update_content=new ## section(s) to append\n\n"
+    "-> action='update', target=slug of page to extend,\n"
+    "   update_content=new ## section(s) to append (use [[slug]] links to related pages)\n\n"
     "RULE 3 — CREATE: ONLY if the source covers a subject not in any existing page.\n"
-    "-> action='create', new_slug=snake_case_slug\n\n"
-    'Return: {{"reasoning":"...","action":"...","target":"","new_slug":"","update_content":""}}\n\n'
+    "-> action='create', new_slug=snake_case_slug,\n"
+    "   page_content=full synthesized Markdown body (# Title + paragraphs with [[slug]] links)\n\n"
+    'Return: {{"reasoning":"...","action":"...","target":"","new_slug":"","update_content":"","page_content":""}}\n\n'
     "Existing wiki pages (top matches):\n{pages}\n\n"
     "New source:\n{summary}\n\n"
     "Detected entities: {entities}"
@@ -259,6 +265,13 @@ class IngestAgent:
                     result.skip_reason = "already ingested"
                     return result
 
+        # For URL / non-file sources p, src_hash, src_size are not set above.
+        # Provide safe defaults so the audit call at the end always succeeds.
+        if not self._needs_file_check(source):
+            p = Path(source.split("?")[0].rstrip("/").split("/")[-1] or "url-source")
+            src_hash = hashlib.sha256(source.encode()).hexdigest()
+            src_size = len(source.encode())
+
         extracted = await self._skill_agent.extract(source)
 
         # Web search fan-out: return child sources; orchestrator enqueues them as jobs
@@ -355,6 +368,7 @@ class IngestAgent:
         target = decisions.get("target", "")
         new_slug = decisions.get("new_slug") or ""
         update_content = decisions.get("update_content", "")
+        page_content = decisions.get("page_content", "")
         title = p.stem.replace("-", " ").replace("_", " ").title()
 
         if action == "flag" and target and self._store.page_exists(target):
@@ -396,9 +410,10 @@ class IngestAgent:
                             self._store.write_page(slug, page)
                     result.pages_updated.append(slug)
                 else:
+                    body = page_content.strip() if page_content.strip() else f"# {title}\n\n{text[:4000]}"
                     new_page = WikiPage(
                         title=title, tags=tags,
-                        content=f"# {title}\n\n{text[:4000]}",
+                        content=body,
                         status="active", confidence="medium", sources=[],
                         created=datetime.now(timezone.utc).strftime("%Y-%m-%d"),
                     )

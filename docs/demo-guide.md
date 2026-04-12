@@ -559,7 +559,16 @@ synthadoc ingest "search for: quantum computing IBM Google" --analyse-only -w hi
 # → {"entities": ["IBM", "Google", "quantum computing"], "tags": [...], "summary": "..."}
 ```
 
-**Via Obsidian plugin:** command palette → `Synthadoc: Ingest from URL...` — the same input accepts intent strings. Type `search for: Linus Torvalds Linux kernel creation 1991` and press **Ingest**.
+**Via Obsidian plugin — dedicated web search modal:**
+
+1. Open the command palette (`Ctrl+P` / `Cmd+P`)
+2. Run **Synthadoc: Web search...**
+3. Type a topic — e.g. `Linus Torvalds Linux kernel creation 1991`
+4. Press **Enter** or click **Search**
+5. You'll see: `Queued — job abc123. Pages will appear in your wiki as results are ingested.`
+6. Switch to the **Synthadoc: List jobs...** modal to watch the fan-out jobs complete
+
+The modal prepends `search for:` automatically — just type the topic, no prefix needed.
 
 ---
 
@@ -737,7 +746,150 @@ new page back into `index.md`.
 
 ---
 
-### Step 13 — Uninstall
+### Step 13 — Hook: auto-commit wiki to git
+
+Hooks let you trigger shell scripts on lifecycle events. This step wires up
+`git-auto-commit.py` so every successful ingest produces a git commit
+— giving the wiki automatic version history with descriptive commit messages.
+
+#### One-time setup
+
+**1. Initialise a git repo in the wiki root** (skip if already done):
+
+```bash
+cd $(synthadoc status | grep Path | awk '{print $2}')
+git init
+git add .
+git commit -m "init: initial wiki snapshot"
+```
+
+**2. Copy the hook script from the library:**
+
+```bash
+cp /path/to/synthadoc/repo/hooks/git-auto-commit.py .
+```
+
+**3. Add to `.synthadoc/config.toml`:**
+
+```toml
+[hooks]
+on_ingest_complete = "python git-auto-commit.py"
+```
+
+**4. Restart the server** to pick up the config change:
+
+```bash
+synthadoc serve -w history-of-computing
+```
+
+#### Run it
+
+Ingest a new source:
+
+```
+synthadoc ingest sources/ada-lovelace.md -w history-of-computing
+```
+
+#### Verify
+
+```bash
+git log --oneline -5
+```
+
+Expected output:
+
+```
+a3f1b2c wiki: ingest ada-lovelace.md → created ada-lovelace
+d9e4c81 wiki: ingest turing-award.pdf → updated alan-turing; created turing-award
+...
+```
+
+Each commit message names the source file and lists which pages were created
+or updated. Open the wiki in Obsidian — `git log` is the full audit trail of
+how the wiki evolved over time.
+
+> **More hooks:** see [`hooks/README.md`](../hooks/README.md) in the repository
+> for the full library and contribution guidelines.
+
+---
+
+### Step 14 — Scheduler: nightly auto-ingest
+
+Hooks react to events that already happened. The scheduler goes the other
+direction — it proactively triggers operations on a timer, so the wiki
+stays fresh without any manual intervention.
+
+**Use case:** as you drop new PDFs, articles, or notes into `raw_sources/`
+during the day, a nightly ingest job picks them all up automatically overnight.
+
+#### Register a nightly ingest
+
+```bash
+synthadoc schedule add \
+  --op "ingest --batch raw_sources/" \
+  --cron "0 2 * * *" \
+  -w history-of-computing
+```
+
+Expected output:
+```
+Scheduled: sched-a3f1b2c4
+```
+
+Synthadoc registers the job directly with the OS scheduler — `crontab` on
+macOS/Linux, Task Scheduler (`schtasks`) on Windows. No background daemon
+is needed; the OS owns the timer.
+
+#### Verify it was registered
+
+```bash
+synthadoc schedule list -w history-of-computing
+```
+
+Expected output:
+```
+sched-a3f1b2c4  0 2 * * *  ingest --batch raw_sources/ -w history-of-computing
+```
+
+#### Add a weekly lint pass
+
+```bash
+synthadoc schedule add \
+  --op "lint run" \
+  --cron "0 3 * * 0" \
+  -w history-of-computing
+```
+
+This registers a Sunday 3 am lint run — contradictions and orphans caught
+every week automatically.
+
+```bash
+synthadoc schedule list -w history-of-computing
+```
+
+Expected output:
+```
+sched-a3f1b2c4  0 2 * * *  ingest --batch raw_sources/ -w history-of-computing
+sched-b7e9d012  0 3 * * 0  lint run -w history-of-computing
+```
+
+#### Clean up (demo only)
+
+Remove the scheduled jobs so they do not run after the demo:
+
+```bash
+synthadoc schedule remove sched-a3f1b2c4 -w history-of-computing
+synthadoc schedule remove sched-b7e9d012 -w history-of-computing
+```
+
+> **Note:** the server must be running when a scheduled job fires. For
+> production use, run `synthadoc serve` as a background service (systemd,
+> launchd, or Windows Service) so it is always available when the OS
+> triggers the schedule.
+
+---
+
+### Step 15 — Uninstall
 
 ```
 synthadoc uninstall history-of-computing
