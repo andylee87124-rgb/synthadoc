@@ -564,7 +564,7 @@ synthadoc
 ├── install <name> --target <dir> [--demo]
 ├── uninstall <name>
 ├── demo list
-├── serve [-w wiki] [--port N] [--mcp-only] [--http-only] [--verbose]
+├── serve [-w wiki] [--port N] [--background] [--mcp-only] [--http-only] [--verbose]
 ├── ingest <source> [-w wiki] [--batch] [--file manifest] [--force] [--analyse-only]
 ├── query "<question>" [-w wiki] [--save]
 ├── lint
@@ -954,6 +954,7 @@ Root logger (level: DEBUG)
 │   Level  : cfg.logs.level (default INFO); overridden to DEBUG if --verbose
 │   Format : "HH:MM:SS LEVEL  logger — message"
 │   Target : stderr
+│   Note   : suppressed when --background spawns the detached child process
 │
 └── File handler (RotatingFileHandler)
     Level  : DEBUG always
@@ -963,6 +964,8 @@ Root logger (level: DEBUG)
 ```
 
 Suppressed to WARNING: `httpx`, `httpcore`, `uvicorn.access`, `anthropic`, `openai`.
+
+**Background mode (`--background` / `-b`):** the parent process prints the startup banner, spawns a detached child process (`pythonw.exe` on Windows, `start_new_session=True` on Unix), and exits — returning the shell to the user. The child runs without a console handler; all output goes to the file handler only. PID is written to `<wiki-root>/.synthadoc/server.pid`.
 
 ### Log record fields
 

@@ -269,16 +269,28 @@ In **Graph view** (`Ctrl/Cmd+G`) you should see 10 interconnected nodes. The `in
 ### Step 1 — Start the server
 
 The server must be running before any ingest, query, or lint command can execute.
-Open a dedicated terminal and leave it running throughout the demo:
+
+**Option A — Background mode (recommended):** the banner is shown and the shell is immediately released. All logs go to `<wiki>/.synthadoc/logs/synthadoc.log`. Use the same terminal for all subsequent commands.
+
+```
+synthadoc serve -w history-of-computing --background
+```
+
+After ~1.5 seconds you will see:
+
+```
+Server running in background
+  PID   <pid>
+  Port  7070
+  Logs  C:\Users\you\wikis\history-of-computing\.synthadoc\logs\synthadoc.log
+
+To stop: taskkill /PID <pid> /F
+```
+
+**Option B — Foreground mode:** the server runs in this terminal and logs print live. Open a second terminal for all subsequent commands.
 
 ```
 synthadoc serve -w history-of-computing
-```
-
-Expected output:
-
-```
-HTTP API running on http://127.0.0.1:7070
 ```
 
 ![synthadoc serve startup](synthadoc-serve.png)
@@ -286,8 +298,6 @@ HTTP API running on http://127.0.0.1:7070
 The banner confirms the port, wiki path, and PID. If you see
 `Warning: TAVILY_API_KEY is not set`, web search jobs will not work — set the key
 before Step 10 if you plan to use that feature.
-
-Use a **second terminal** for all commands below. All plugin commands are now active.
 
 > **Obsidian ribbon:** The ribbon is the narrow vertical icon strip on the far left edge of
 > the Obsidian window. Once the Synthadoc plugin is enabled, the Synthadoc book icon

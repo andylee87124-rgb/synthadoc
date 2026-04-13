@@ -152,7 +152,7 @@ For full architecture details, data models, API reference, and plugin developmen
 - **Cost guards** — configurable soft-warn and hard-gate USD thresholds
 - **Hook system** — shell commands on `on_ingest_complete` and `on_lint_complete` lifecycle events; blocking or background; context passed as JSON on stdin; community hook library in [`hooks/`](hooks/)
 - **Job queue** — SQLite-backed, persistent, retry with exponential backoff; non-retryable errors (`failed`) distinguished from exhausted-retry errors (`dead`)
-- **Startup banner** — ASCII logo with version, port, wiki, and PID on `synthadoc serve`; plain-text version served at `GET /`
+- **Startup banner** — ASCII logo with version, port, wiki, and PID on `synthadoc serve`; plain-text version served at `GET /`; `--background` flag detaches the server and returns the shell immediately (logs → file only)
 - **Multi-wiki** — unlimited isolated wikis, each on its own port
 - **OpenTelemetry** — traces, metrics, structured logs; OTLP export optional
 - **Cross-platform** — Windows, Linux, macOS
@@ -341,8 +341,12 @@ synthadoc demo list
 ### Running the server
 
 ```bash
-# Start HTTP API + job worker
+# Start HTTP API + job worker (foreground — terminal stays attached)
 synthadoc serve -w my-wiki
+
+# Detach to background — banner shown, then shell is released
+# All logs go to <wiki>/.synthadoc/logs/synthadoc.log
+synthadoc serve -w my-wiki --background
 
 # Custom port
 synthadoc serve -w my-wiki --port 7071

@@ -33,7 +33,7 @@ _NAME = r"""
 
 from synthadoc import __version__ as _VERSION
 
-_REPO_URL = "https://github.com/Axoviq-ai/synthadoc"
+_DEFAULT_SERVER_URL = "http://127.0.0.1:7070"
 
 # ──────────────────────────────────────────────
 #  ANSI helpers
@@ -80,7 +80,7 @@ def print_banner(
         _c(_WHITE,          f"  Wiki:  {wiki}", use_color),
         _c(_WHITE,          f"  PID:   {os.getpid()}", use_color),
         "",
-        _c(_DIM,            f"  {_REPO_URL}", use_color),
+        _c(_DIM,            f"  http://127.0.0.1:{port}", use_color),
     ]
 
     # Pad shorter list so we can zip
@@ -108,6 +108,6 @@ def banner_text(version: str = _VERSION) -> str:
     lines.append("")
     lines.extend(name_lines)
     lines.append(f"  Version {version}  —  Domain-agnostic LLM wiki engine")
-    lines.append(f"  {_REPO_URL}")
+    lines.append(f"  {_DEFAULT_SERVER_URL}")
     lines.append("")
     return "\n".join(lines)

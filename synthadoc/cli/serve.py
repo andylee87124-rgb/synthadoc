@@ -4,6 +4,9 @@ from __future__ import annotations
 
 import os
 import socket
+import sys
+import time
+import subprocess
 from pathlib import Path
 from typing import Optional
 
@@ -11,6 +14,9 @@ import typer
 
 from synthadoc.cli.main import app
 from synthadoc.cli.install import resolve_wiki_path
+
+# Internal env var set on the detached child to suppress duplicate banner output.
+_NO_BANNER_ENV = "_SYNTHADOC_NO_BANNER"
 
 _PROVIDER_HOSTS = {
     "anthropic": ("api.anthropic.com", 443),
@@ -74,6 +80,63 @@ def _check_network(provider: str) -> None:
         )
 
 
+def _spawn_background(wiki_root: Path, effective_port: int, log_path: Path) -> None:
+    """Detach the server as a background process and return to the shell."""
+    # Strip --background / -b from the forwarded args.
+    server_args = [a for a in sys.argv[1:] if a not in ("--background", "-b")]
+
+    if sys.platform == "win32":
+        # pythonw.exe runs Python with no console window at all — the child
+        # process has zero console association, so the parent's CMD/PowerShell
+        # window returns to the prompt as soon as the parent exits.
+        pythonw = Path(sys.executable).with_name("pythonw.exe")
+        interpreter = str(pythonw) if pythonw.exists() else sys.executable
+        cmd = [interpreter, "-m", "synthadoc"] + server_args
+        popen_kwargs: dict = dict(
+            args=cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, _NO_BANNER_ENV: "1"},
+            creationflags=subprocess.CREATE_NEW_PROCESS_GROUP,
+        )
+    else:
+        cmd = [sys.argv[0]] + server_args
+        popen_kwargs = dict(
+            args=cmd,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            stdin=subprocess.DEVNULL,
+            env={**os.environ, _NO_BANNER_ENV: "1"},
+            start_new_session=True,
+        )
+
+    proc = subprocess.Popen(**popen_kwargs)
+
+    # Persist PID so the user (or a stop command) can terminate the server.
+    pid_path = wiki_root / ".synthadoc" / "server.pid"
+    pid_path.write_text(str(proc.pid), encoding="utf-8")
+
+    # Brief pause — detect immediate crashes before telling the user it worked.
+    time.sleep(1.5)
+    if proc.poll() is not None:
+        typer.echo(
+            f"\nError: background server exited immediately (code {proc.returncode}).\n"
+            f"Check logs: {log_path}",
+            err=True,
+        )
+        raise typer.Exit(1)
+
+    typer.echo(
+        f"\nServer running in background\n"
+        f"  PID   {proc.pid}\n"
+        f"  Port  {effective_port}\n"
+        f"  Logs  {log_path}\n"
+        f"\nTo stop: kill {proc.pid}"
+        + (f"  (or: taskkill /PID {proc.pid} /F)" if sys.platform == "win32" else "")
+    )
+
+
 @app.command("serve")
 def serve_cmd(
     wiki: Optional[str] = typer.Option(None, "--wiki", "-w"),
@@ -83,6 +146,9 @@ def serve_cmd(
     http_only: bool = typer.Option(False, "--http-only"),
     verbose: bool = typer.Option(False, "--verbose", "-v",
         help="Set console log level to DEBUG (file always logs DEBUG)."),
+    background: bool = typer.Option(False, "--background", "-b",
+        help="Detach the server to the background. Banner is shown then the shell is released; "
+             "all subsequent logs go to the wiki log file."),
 ):
     """Start MCP + HTTP API servers (localhost only).
 
@@ -137,9 +203,15 @@ def serve_cmd(
 
     _check_network(provider)
 
-    from synthadoc.cli.logo import print_banner
-    mode = "MCP (stdio)" if mcp_only else "HTTP" if http_only else "HTTP + MCP"
-    print_banner(port=effective_port, wiki=str(root), mode=mode)
+    if not os.environ.get(_NO_BANNER_ENV):
+        from synthadoc.cli.logo import print_banner
+        mode = "MCP (stdio)" if mcp_only else "HTTP" if http_only else "HTTP + MCP"
+        print_banner(port=effective_port, wiki=str(root), mode=mode)
+
+    if background:
+        log_path = root / ".synthadoc" / "logs" / "synthadoc.log"
+        _spawn_background(root, effective_port, log_path)
+        return
 
     if not mcp_only:
         from synthadoc.integration.http_server import create_app
