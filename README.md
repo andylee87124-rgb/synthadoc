@@ -239,6 +239,32 @@ $env:TAVILY_API_KEY = "tvly-…"
 synthadoc --version
 ```
 
+### Step 6 — Start the Synthadoc engine
+
+The engine must be running before you can ingest sources or run queries. Start it against the demo wiki (install it first if you haven't — see the Quick-Start Guide below):
+
+```bash
+# Foreground — keeps the terminal; logs stream to the console
+synthadoc serve -w history-of-computing
+
+# Background — releases the terminal; logs go to the wiki log file
+synthadoc serve -w history-of-computing --background
+```
+
+The server binds to `http://127.0.0.1:7070` by default. Leave it running while you work — the Obsidian plugin, CLI ingest commands, and query commands all talk to it.
+
+To stop a background server:
+
+```bash
+# Linux / macOS
+kill <PID>
+
+# Windows (PowerShell or cmd.exe)
+taskkill /PID <PID> /F
+```
+
+The PID is printed when the background server starts and saved to `<wiki-root>/.synthadoc/server.pid`.
+
 ---
 
 ## Quick-Start Guide
